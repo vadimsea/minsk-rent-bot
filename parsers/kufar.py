@@ -68,22 +68,51 @@ class KufarParser(BaseParser):
             title = ad.get("subject") or ad.get("title")
             if not title:
                 continue
+            title = str(title).strip()
+            # subject у Kufar часто склеен с адресом через "/", "," или " - ".
+            # Берём первую логичную часть, чтобы заголовок выглядел опрятно.
+            for sep in (" / ", "/", " — ", " - ", ","):
+                if sep in title:
+                    candidate = title.split(sep, 1)[0].strip()
+                    if len(candidate) >= 8:
+                        title = candidate
+                        break
 
             price_value, currency = self._extract_price(ad)
             image_url = self._extract_image(ad)
             params = self._params_to_dict(ad.get("ad_parameters") or ad.get("adParameters") or [])
 
             rooms = params.get("rooms") or params.get("rooms_count")
-            area = params.get("size") or params.get("square")
+            area = (
+                params.get("size")
+                or params.get("square")
+                or params.get("size_m2")
+            )
             floor = params.get("floor")
-            floors_total = params.get("floors") or params.get("floor_total")
+            floors_total = (
+                params.get("floors")
+                or params.get("floors_count")
+                or params.get("floor_total")
+            )
             address = ad.get("address") or params.get("address")
-            district = params.get("district") or params.get("region")
-            metro = params.get("metro") or params.get("subway")
+            # district = район Минска (Фрунзенский, Московский...).
+            # region = область, его не показываем (у нас и так фильтр на Минск).
+            district = (
+                params.get("district")
+                or params.get("rent_district")
+                or params.get("region_district")
+            )
+            metro = (
+                params.get("metro")
+                or params.get("rent_metro")
+                or params.get("subway")
+                or params.get("metro_station")
+                or params.get("nearest_metro")
+            )
 
             listing = self.empty_listing()
             listing.update({
-                "title": str(title).strip(),
+                "title": title,
                 "price_value": price_value,
                 "price": f"{price_value} {currency}" if price_value and currency else None,
                 "currency": currency,
@@ -190,17 +219,56 @@ class KufarParser(BaseParser):
         return None
 
     def _params_to_dict(self, params: Any) -> Dict[str, Any]:
+        """
+        Разворачивает Kufar ad_parameters в плоский словарь.
+        ВАЖНО: для каждого параметра берём именно `vl` (value label) —
+        человекочитаемое значение. Поле `v` содержит ID/коды Kufar,
+        которые в посте показывать нельзя (получится «Метро: [3, 17]»).
+        """
         result: Dict[str, Any] = {}
         if not isinstance(params, list):
             return result
+
         for p in params:
             if not isinstance(p, dict):
                 continue
-            key = (p.get("p") or p.get("name") or p.get("pl") or "").lower()
-            value = p.get("v") or p.get("value") or p.get("vl")
-            if key:
-                result[key] = value
+            key = (p.get("p") or p.get("name") or "").lower()
+            if not key:
+                continue
+
+            raw = p.get("vl")
+            if raw is None or raw == "" or raw == []:
+                raw = p.get("value_label")
+            if raw is None or raw == "" or raw == []:
+                fallback = p.get("v") if "v" in p else p.get("value")
+                if isinstance(fallback, (list, tuple)):
+                    # Если массив из одного числа/строки (часто бывает у floor,
+                    # rooms, area) — это не ID, можно развернуть.
+                    if len(fallback) == 1 and isinstance(fallback[0], (int, float, str)):
+                        raw = fallback[0]
+                    else:
+                        # Несколько ID — без vl не расшифровать.
+                        raw = None
+                else:
+                    raw = fallback
+
+            result[key] = self._stringify_param(raw)
         return result
+
+    @staticmethod
+    def _stringify_param(value: Any) -> Any:
+        """Делает из листов читаемую строку, остальные значения отдаёт как есть."""
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            # фильтруем None / пустые
+            items = [str(v).strip() for v in value if v not in (None, "", [])]
+            if not items:
+                return None
+            if len(items) == 1:
+                return items[0]
+            return ", ".join(items)
+        return value
 
     def _parse_html(self, html: str) -> List[Dict[str, Any]]:
         soup = BeautifulSoup(html, "lxml")
