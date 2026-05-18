@@ -1,0 +1,116 @@
+name: Rent Bot
+
+# GitHub Actions использует UTC. Минск = UTC+3, без перехода на летнее время.
+# Окно 10:00-20:00 по Минску = 07:00-17:00 UTC.
+# Чтобы покрыть случайные слоты с допуском grace=30 мин даже на верхней
+# границе окна, гоняем cron вплоть до 17:59 UTC включительно.
+on:
+  schedule:
+    - cron: '*/5 7-17 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rent-bot
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write .env from secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        run: |
+          cat > .env <<EOF
+          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          TELEGRAM_CHANNEL_ID=${TELEGRAM_CHANNEL_ID}
+
+          DRY_RUN=false
+
+          POSTS_PER_RUN=1
+          POST_INTERVAL_SECONDS=10
+
+          POSTS_PER_DAY=12
+          POST_WINDOW_START=10:00
+          POST_WINDOW_END=20:00
+
+          CITY=Минск
+          RENT_TYPE=long_term
+          ALLOWED_LISTING_TYPES=apartment,room
+          REQUIRE_PHOTO=true
+
+          MIN_ROOM_PRICE_USD=80
+          MIN_APARTMENT_PRICE_USD=150
+          MAX_PRICE_USD=2000
+
+          ENABLE_REALT=true
+          ENABLE_KUFAR=true
+          ENABLE_DOMOVITA=true
+          ENABLE_HATA=true
+          ENABLE_ONLINER=false
+
+          REQUEST_TIMEOUT=20
+          REQUEST_DELAY_SECONDS=3
+          REQUEST_MAX_RETRIES=3
+          USER_AGENT=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36
+
+          TIMEZONE=Europe/Minsk
+          LOG_LEVEL=INFO
+          LOG_FILE=rent_bot.log
+          DB_PATH=published.sqlite3
+          EOF
+
+      - name: Run cron tick
+        run: |
+          python main.py --cron-tick --grace-minutes 30
+
+      - name: Commit DB changes
+        if: always()
+        run: |
+          git config user.name "rent-bot[bot]"
+          git config user.email "rent-bot@users.noreply.github.com"
+          git add -f published.sqlite3 || true
+          if git diff --cached --quiet; then
+            echo "БД не изменилась — коммит не нужен."
+          else
+            git commit -m "chore: update published.sqlite3 [skip ci]"
+            for i in 1 2 3; do
+              if git push; then
+                echo "БД запушена"; break
+              fi
+              echo "push не удался, ждём и пробуем снова (попытка $i)"
+              sleep $((RANDOM % 10 + 5))
+              git pull --rebase --autostash || true
+            done
+          fi
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rent_bot-log-${{ github.run_number }}
+          path: rent_bot.log
+          if-no-files-found: ignore
+          retention-days: 7

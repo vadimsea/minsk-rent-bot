@@ -1,0 +1,28 @@
+# Секреты — никогда в репозиторий!
+.env
+.env.*
+!.env.example
+
+# Логи
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.python-version
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Временные файлы фоток (telegram_publisher делает mkstemp)
+rent_photo_*.jpg
