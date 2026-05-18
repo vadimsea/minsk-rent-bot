@@ -25,6 +25,15 @@ from parsers.base import BaseParser, absolute_url
 logger = logging.getLogger("parsers.realt")
 
 
+# Realt отдаёт код валюты по ISO 4217 (число)
+ISO_CURRENCY = {
+    840: "USD",
+    933: "BYN",
+    978: "EUR",
+    643: "RUB",
+}
+
+
 class RealtParser(BaseParser):
     name = "realt"
     source = "Realt.by"
@@ -61,11 +70,8 @@ class RealtParser(BaseParser):
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
-            url = obj.get("url") or obj.get("link")
-            if not url and obj.get("uuid"):
-                # Realt использует ЧПУ-ссылки вида /object/<uuid>/
-                url = f"{self.base_url or 'https://realt.by'}/object/{obj['uuid']}/"
-            url = absolute_url(self.base_url or "https://realt.by", url)
+
+            url = self._build_object_url(obj)
             if not url:
                 continue
 
@@ -82,9 +88,10 @@ class RealtParser(BaseParser):
             district = self._extract_district(obj)
             metro = self._extract_metro(obj)
             rooms = obj.get("rooms") or obj.get("roomsCount")
-            area = obj.get("area") or obj.get("areaTotal")
+            area = obj.get("areaTotal") or obj.get("area")
             floor = self._extract_floor(obj)
-            description = obj.get("description") or obj.get("shortDescription")
+            description = obj.get("description") or obj.get("shortDescription") or obj.get("headline")
+            address = obj.get("address")
 
             listing = self.empty_listing()
             listing.update({
@@ -93,6 +100,7 @@ class RealtParser(BaseParser):
                 "price": f"{price_value} {currency}" if price_value and currency else None,
                 "currency": currency,
                 "district": district,
+                "address": address,
                 "metro": metro,
                 "rooms": str(rooms) if rooms else None,
                 "area": f"{area} м²" if area else None,
@@ -100,11 +108,24 @@ class RealtParser(BaseParser):
                 "description": description,
                 "url": url,
                 "image_url": image_url,
-                "external_id": str(obj.get("uuid") or obj.get("id") or ""),
+                "external_id": str(obj.get("uuid") or obj.get("code") or obj.get("id") or ""),
             })
             results.append(listing)
 
         return results
+
+    def _build_object_url(self, obj: Dict[str, Any]) -> str | None:
+        # Самый стабильный путь: /rent-flat-for-long/object/<code>/
+        existing = obj.get("url") or obj.get("link")
+        if existing:
+            return absolute_url(self.base_url or "https://realt.by", existing)
+
+        code = obj.get("code") or obj.get("uuid") or obj.get("id")
+        if not code:
+            return None
+
+        prefix = "rent-room-for-long" if self.category == "room" else "rent-flat-for-long"
+        return f"{(self.base_url or 'https://realt.by').rstrip('/')}/{prefix}/object/{code}/"
 
     def _extract_objects(self, data: Any) -> List[Any]:
         """Ищем в __NEXT_DATA__ массив объектов недвижимости."""
@@ -136,7 +157,19 @@ class RealtParser(BaseParser):
         return []
 
     def _extract_price(self, obj: Dict[str, Any]) -> tuple[int | None, str | None]:
-        # Realt часто кладёт цены так: priceUsd, priceByn, prices[]
+        # Текущий формат Realt: price + priceCurrency (ISO 4217 numeric)
+        price = obj.get("price")
+        price_currency = obj.get("priceCurrency")
+        if price and price_currency:
+            try:
+                value = int(float(price))
+                currency = ISO_CURRENCY.get(int(price_currency))
+                if value > 0 and currency:
+                    return value, currency
+            except (TypeError, ValueError):
+                pass
+
+        # Историческое: priceUsd / priceByn / priceEur
         for key, currency in (
             ("priceUsd", "USD"),
             ("price_usd", "USD"),
@@ -184,7 +217,7 @@ class RealtParser(BaseParser):
         return None
 
     def _extract_district(self, obj: Dict[str, Any]) -> str | None:
-        for key in ("districtName", "district", "townDistrict"):
+        for key in ("stateDistrictName", "districtName", "district", "townDistrict"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -195,7 +228,7 @@ class RealtParser(BaseParser):
         return None
 
     def _extract_metro(self, obj: Dict[str, Any]) -> str | None:
-        for key in ("metro", "metroStation", "subway"):
+        for key in ("metroStationName", "metro", "metroStation", "subway"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -214,8 +247,13 @@ class RealtParser(BaseParser):
         return None
 
     def _extract_floor(self, obj: Dict[str, Any]) -> str | None:
-        floor = obj.get("floor")
-        floors = obj.get("floors") or obj.get("floorsTotal") or obj.get("floorTotal")
+        floor = obj.get("storey") or obj.get("floor")
+        floors = (
+            obj.get("storeys")
+            or obj.get("floors")
+            or obj.get("floorsTotal")
+            or obj.get("floorTotal")
+        )
         if floor and floors:
             return f"{floor} из {floors}"
         if floor:

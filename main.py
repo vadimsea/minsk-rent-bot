@@ -147,8 +147,11 @@ def run_once(posts_count: int | None = None) -> int:
 
         ok = publisher.publish(listing)
         if ok:
-            storage.mark_as_published(listing)
             published_count += 1
+            # В DRY_RUN ничего реально не публиковалось — БД не трогаем,
+            # иначе при первом боевом прогоне всё будет пропущено как «дубль».
+            if not CONFIG.dry_run:
+                storage.mark_as_published(listing)
         else:
             logger.warning("Не удалось опубликовать: %s", listing.get("url"))
 
