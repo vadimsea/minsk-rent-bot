@@ -43,7 +43,7 @@ def get_sources() -> List[Source]:
         Source(
             name="Realt.by",
             base_url="https://realt.by",
-            list_url="https://realt.by/rent-flat-for-long/?addressV2=%5B%7B%22townUuid%22%3A%22df0bc88c-4458-11eb-8b03-0cc47adabd8a%22%7D%5D",
+            list_url="https://realt.by/rent/flat-for-long/",
             enabled=_enabled("enable_realt"),
             parser_name="realt",
             city="Минск",
@@ -54,7 +54,7 @@ def get_sources() -> List[Source]:
         Source(
             name="Realt.by",
             base_url="https://realt.by",
-            list_url="https://realt.by/rent-room-for-long/?addressV2=%5B%7B%22townUuid%22%3A%22df0bc88c-4458-11eb-8b03-0cc47adabd8a%22%7D%5D",
+            list_url="https://realt.by/rent/room-for-long/",
             enabled=_enabled("enable_realt"),
             parser_name="realt",
             city="Минск",
@@ -102,7 +102,7 @@ def get_sources() -> List[Source]:
         Source(
             name="Domovita.by",
             base_url="https://domovita.by",
-            list_url="https://domovita.by/minsk/rooms/rent",
+            list_url="https://domovita.by/minsk/room/rent",
             enabled=_enabled("enable_domovita"),
             parser_name="domovita",
             city="Минск",
@@ -115,7 +115,7 @@ def get_sources() -> List[Source]:
         Source(
             name="Hata.by",
             base_url="https://hata.by",
-            list_url="https://hata.by/rent/minsk",
+            list_url="https://hata.by/rent-flat/minsk/",
             enabled=_enabled("enable_hata"),
             parser_name="hata",
             city="Минск",
@@ -126,7 +126,7 @@ def get_sources() -> List[Source]:
         Source(
             name="Hata.by",
             base_url="https://hata.by",
-            list_url="https://hata.by/rent-room/minsk",
+            list_url="https://hata.by/rent-room/minsk/",
             enabled=_enabled("enable_hata"),
             parser_name="hata",
             city="Минск",

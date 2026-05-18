@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List
+
+
+# Реальные image_id у Kufar выглядят как длинный hex-хеш (40+ символов).
+# Заглушки/пустые значения вроде "0", "0000", "none" — фильтруем,
+# чтобы не строить URL вида yams.kufar.by/.../00/0000.jpg
+_HEX_HASH_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
 
 from bs4 import BeautifulSoup
 
@@ -139,22 +146,47 @@ class KufarParser(BaseParser):
         return None, None
 
     def _extract_image(self, ad: Dict[str, Any]) -> str | None:
+        # 1) Если есть готовый абсолютный URL — используем его
+        for key in ("image_url", "imageUrl", "main_image_url", "photo"):
+            value = ad.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+
         images = ad.get("images")
-        if isinstance(images, list) and images:
-            first = images[0]
-            if isinstance(first, dict):
-                # Kufar шаблон URL картинки: yams.kufar.by/api/v1/kufar-ads/images/<id>/<size>.jpg
-                image_id = first.get("id") or first.get("path")
-                if image_id and isinstance(image_id, str):
-                    if image_id.startswith("http"):
-                        return image_id
-                    return f"https://yams.kufar.by/api/v1/kufar-ads/images/{image_id[:2]}/{image_id}.jpg?rule=gallery"
-                url = first.get("url") or first.get("src")
-                if url:
-                    return url
-            elif isinstance(first, str):
-                if first.startswith("http"):
-                    return first
+        if not isinstance(images, list) or not images:
+            return None
+
+        # Перебираем первые несколько картинок (некоторые могут быть заглушками)
+        for img in images[:5]:
+            if isinstance(img, str):
+                if img.startswith("http"):
+                    return img
+                continue
+
+            if not isinstance(img, dict):
+                continue
+
+            # 2) Прямая ссылка
+            for key in ("url", "src", "image_url", "imageUrl"):
+                direct = img.get(key)
+                if isinstance(direct, str) and direct.startswith("http"):
+                    return direct
+
+            # 3) ID картинки → строим URL шаблона Kufar
+            image_id = img.get("id") or img.get("path") or img.get("media_storage")
+            if not isinstance(image_id, str):
+                continue
+
+            image_id = image_id.strip()
+            if not image_id or not _HEX_HASH_RE.match(image_id):
+                # Похоже на заглушку ("0000", "none", и т.п.) — пропускаем
+                continue
+
+            return (
+                "https://yams.kufar.by/api/v1/kufar-ads/images/"
+                f"{image_id[:2]}/{image_id}.jpg?rule=gallery"
+            )
+
         return None
 
     def _params_to_dict(self, params: Any) -> Dict[str, Any]:
