@@ -16,10 +16,8 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from bs4 import BeautifulSoup
-
 from fetcher import fetch_text
-from parsers.base import BaseParser, absolute_url
+from parsers.base import BaseParser, absolute_url, make_soup
 
 
 logger = logging.getLogger("parsers.realt")
@@ -52,7 +50,7 @@ class RealtParser(BaseParser):
 
     # ---------- основной путь: __NEXT_DATA__ ----------
     def _parse_next_data(self, html: str) -> List[Dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         tag = soup.find("script", id="__NEXT_DATA__")
         if not tag or not tag.string:
             return []
@@ -270,7 +268,7 @@ class RealtParser(BaseParser):
 
     # ---------- fallback: HTML ----------
     def _parse_html(self, html: str) -> List[Dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         results: List[Dict[str, Any]] = []
 
         # Realt меняет вёрстку, поэтому ищем все ссылки на /object/

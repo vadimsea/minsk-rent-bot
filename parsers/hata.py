@@ -12,10 +12,10 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import Tag
 
 from fetcher import fetch_text
-from parsers.base import BaseParser, absolute_url
+from parsers.base import BaseParser, absolute_url, make_soup
 
 
 logger = logging.getLogger("parsers.hata")
@@ -36,7 +36,7 @@ class HataParser(BaseParser):
         if not html:
             return []
 
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         cards = self._find_cards(soup)
 
         results: List[Dict[str, Any]] = []

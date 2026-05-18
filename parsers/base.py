@@ -34,8 +34,24 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from bs4 import BeautifulSoup
+
 
 logger = logging.getLogger("parsers")
+
+
+# Пытаемся использовать lxml (быстрый), а если он не установлен —
+# работаем со встроенным html.parser. Это позволяет запускать парсеры
+# и локально без обязательной установки lxml.
+try:
+    BeautifulSoup("", "lxml")
+    _PARSER = "lxml"
+except Exception:  # noqa: BLE001
+    _PARSER = "html.parser"
+
+
+def make_soup(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, _PARSER)
 
 
 class BaseParser(ABC):

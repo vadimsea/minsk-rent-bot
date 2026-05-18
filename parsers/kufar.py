@@ -19,10 +19,8 @@ from typing import Any, Dict, List
 # чтобы не строить URL вида yams.kufar.by/.../00/0000.jpg
 _HEX_HASH_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
 
-from bs4 import BeautifulSoup
-
 from fetcher import fetch_text
-from parsers.base import BaseParser, absolute_url
+from parsers.base import BaseParser, absolute_url, make_soup
 
 
 logger = logging.getLogger("parsers.kufar")
@@ -44,7 +42,7 @@ class KufarParser(BaseParser):
         return self._parse_html(html)
 
     def _parse_next_data(self, html: str) -> List[Dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         tag = soup.find("script", id="__NEXT_DATA__")
         if not tag or not tag.string:
             return []
@@ -88,20 +86,19 @@ class KufarParser(BaseParser):
                 or params.get("square")
                 or params.get("size_m2")
             )
-            floor = params.get("floor")
+            floor = params.get("floor") or params.get("re_number_floor")
             floors_total = (
                 params.get("floors")
                 or params.get("floors_count")
                 or params.get("floor_total")
+                or params.get("re_number_floors")
             )
             address = ad.get("address") or params.get("address")
-            # district = район Минска (Фрунзенский, Московский...).
-            # region = область, его не показываем (у нас и так фильтр на Минск).
-            district = (
-                params.get("district")
-                or params.get("rent_district")
-                or params.get("region_district")
-            )
+            # На Kufar районы Минска лежат в параметре "area" (например, "Московский").
+            # "district" — это, наоборот, муниципальный/областной район; в Минске
+            # он обычно совпадает с region и нам не нужен. "re_district" — это
+            # микрорайон ("Юго-Запад").
+            district = params.get("area") or params.get("re_district")
             metro = (
                 params.get("metro")
                 or params.get("rent_metro")
@@ -271,7 +268,7 @@ class KufarParser(BaseParser):
         return value
 
     def _parse_html(self, html: str) -> List[Dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         results: List[Dict[str, Any]] = []
         for link in soup.select("a[href*='/vi/']"):
             href = link.get("href") or ""
