@@ -7,7 +7,16 @@ name: Rent Bot
 on:
   schedule:
     - cron: '*/5 7-17 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Опубликовать прямо сейчас (в обход дневных слотов)'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'DRY_RUN: ничего не публиковать, только лог'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,12 +51,17 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
         run: |
+          DRY_RUN_VALUE="false"
+          if [ "$DRY_RUN_INPUT" = "true" ]; then
+            DRY_RUN_VALUE="true"
+          fi
           cat > .env <<EOF
           TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
           TELEGRAM_CHANNEL_ID=${TELEGRAM_CHANNEL_ID}
 
-          DRY_RUN=false
+          DRY_RUN=${DRY_RUN_VALUE}
 
           POSTS_PER_RUN=1
           POST_INTERVAL_SECONDS=10
@@ -82,9 +96,16 @@ jobs:
           DB_PATH=published.sqlite3
           EOF
 
-      - name: Run cron tick
+      - name: Run bot
+        env:
+          FORCE_PUBLISH: ${{ inputs.force_publish }}
         run: |
-          python main.py --cron-tick --grace-minutes 30
+          if [ "$FORCE_PUBLISH" = "true" ]; then
+            echo "force_publish=true -> прогон --once (немедленная публикация)"
+            python main.py --once
+          else
+            python main.py --cron-tick --grace-minutes 30
+          fi
 
       - name: Commit DB changes
         if: always()
