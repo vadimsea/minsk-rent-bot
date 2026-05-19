@@ -101,8 +101,8 @@ jobs:
           FORCE_PUBLISH: ${{ inputs.force_publish }}
         run: |
           if [ "$FORCE_PUBLISH" = "true" ]; then
-            echo "force_publish=true -> прогон --once (немедленная публикация)"
-            python main.py --once
+            echo "force_publish=true -> прогон --once x4 (немедленная публикация)"
+            POSTS_PER_RUN=4 POST_INTERVAL_SECONDS=15 python main.py --once
           else
             python main.py --cron-tick --grace-minutes 30
           fi
