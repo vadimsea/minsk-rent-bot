@@ -13,10 +13,21 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger("formatter")
+
+# Снимаем дублирующий префикс города из адреса перед выводом:
+# "Минск Брилевская ул. 37" -> "Брилевская ул. 37"
+_CITY_PREFIX_RE = re.compile(r"^\s*(?:г\.?\s*)?минск[,\s]+", re.IGNORECASE)
+
+
+def _trim_city_prefix(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return value
+    return _CITY_PREFIX_RE.sub("", value).strip() or None
 
 
 TELEGRAM_CAPTION_LIMIT = 1024
@@ -61,7 +72,13 @@ def format_listing(listing: Dict[str, Any]) -> str:
 
     info_rows: List[Optional[str]] = []
     info_rows.append(_row("💰", "Цена", listing.get("price")))
-    info_rows.append(_row("📍", "Район", listing.get("district") or listing.get("address")))
+    district = listing.get("district")
+    if district:
+        info_rows.append(_row("📍", "Район", district))
+    else:
+        # Адрес часто начинается с «Минск ...» — это не информативно, режем.
+        address = _trim_city_prefix(listing.get("address"))
+        info_rows.append(_row("📍", "Адрес", address))
     info_rows.append(_row("🚇", "Метро", listing.get("metro")))
 
     if listing_type == "room":

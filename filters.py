@@ -121,14 +121,61 @@ def is_apartment_or_room(listing: Dict[str, Any]) -> bool:
     return True
 
 
+_NON_MINSK_CITY_RE = re.compile(
+    # «Минский район» / «Минская область» в любом падеже, плюс
+    # популярные пригороды и райцентры — это всё НЕ Минск-город.
+    r"\b(?:"
+    r"минск\w+\s+район\w*|минск\w+\s+обл(?:асть|асти|астью)?|"
+    r"заславль|боровляны|колодищи|сёмково|семково|тарасово|"
+    r"ждановичи|острошицкий\s+городок|сосны|раков|самохваловичи|"
+    r"атолино|михановичи|лесковка|щомыслица|папярня|сеница|"
+    r"дзержинск|логойск|молодечно|смолевичи|фаниполь|жодино|"
+    r"руденск|марьина\s+горка|столбцы|воложин|узда|клецк"
+    r")\b"
+)
+
+# «Минск-город»: имя существительное «Минск» в любом падеже
+# (минск/минске/минску/минска/минском), но НЕ прилагательное
+# (минский/минская/минские/...).
+_MINSK_NOUN_RE = re.compile(r"\bминск(?:[ауеом]|ом)?\b")
+_MINSK_ADJ_RE = re.compile(r"\bминск(?:ий|ая|ое|ие|ого|ому|ой|ом|им|ими|их|ую)\b")
+
+
+def _city_is_minsk(city: str) -> bool:
+    """Проверка по полю city: правда если это именно город Минск."""
+    city = city.strip().lower()
+    if not city:
+        return False
+    # отрезаем хвосты вроде «Минск, Беларусь» / «г. Минск»
+    city = re.sub(r"^г\.?\s*", "", city)
+    head = re.split(r"[,(]", city, maxsplit=1)[0].strip()
+    if not head:
+        return False
+    # «Минский (район)» / «Минская (область)» — мимо
+    if _MINSK_ADJ_RE.fullmatch(head):
+        return False
+    if "район" in head or "область" in head or "обл." in head:
+        return False
+    return bool(_MINSK_NOUN_RE.fullmatch(head))
+
+
 def is_minsk_listing(listing: Dict[str, Any]) -> bool:
-    target = (CONFIG.city or "Минск").lower()
-    city = (listing.get("city") or "").lower()
-    if target and target in city:
-        return True
-    # запас: ищем «минск» в title/address/url
     text = _haystack(listing)
-    return "минск" in text or "minsk" in text
+
+    # 1) Жёсткий ban: явные признаки «не Минск-город».
+    if _NON_MINSK_CITY_RE.search(text):
+        return False
+
+    # 2) Если парсер вытащил city — доверяем ему.
+    raw_city = (listing.get("city") or "").strip()
+    if raw_city:
+        return _city_is_minsk(raw_city)
+
+    # 3) Fallback на текст: должен встретиться «Минск» именно как
+    # название города (существительное), не как прилагательное «Минский».
+    if _MINSK_NOUN_RE.search(text) or "minsk" in text:
+        return True
+    return False
 
 
 def has_price(listing: Dict[str, Any]) -> bool:

@@ -212,7 +212,7 @@ def normalize_listing(listing: Dict[str, Any]) -> Dict[str, Any]:
     out["district"] = clean_text(out.get("district"))
     out["address"] = clean_text(out.get("address"))
     out["metro"] = clean_text(out.get("metro"))
-    out["city"] = clean_text(out.get("city")) or "Минск"
+    out["city"] = clean_text(out.get("city"))  # None если парсер не вытащил — фильтр сам решит
     out["floor"] = clean_text(out.get("floor"))
     out["area"] = clean_text(out.get("area"))
     out["rooms"] = clean_text(out.get("rooms"))

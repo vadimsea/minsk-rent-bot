@@ -90,6 +90,7 @@ class RealtParser(BaseParser):
             floor = self._extract_floor(obj)
             description = obj.get("description") or obj.get("shortDescription") or obj.get("headline")
             address = obj.get("address")
+            city = obj.get("townName") or obj.get("town") or obj.get("city")
 
             listing = self.empty_listing()
             listing.update({
@@ -97,6 +98,7 @@ class RealtParser(BaseParser):
                 "price_value": price_value,
                 "price": f"{price_value} {currency}" if price_value and currency else None,
                 "currency": currency,
+                "city": str(city).strip() if isinstance(city, str) and city.strip() else None,
                 "district": district,
                 "address": address,
                 "metro": metro,
@@ -215,7 +217,14 @@ class RealtParser(BaseParser):
         return None
 
     def _extract_district(self, obj: Dict[str, Any]) -> str | None:
-        for key in ("stateDistrictName", "districtName", "district", "townDistrict"):
+        """
+        Берём ТОЛЬКО городской район (Советский / Фрунзенский / ...).
+        stateDistrictName специально игнорируем — у Realt он для квартир
+        внутри Минска всегда равен «Минский» (это район Минской ОБЛАСТИ
+        вокруг города), и выводить такое в посте бессмысленно и
+        вводит в заблуждение, будто квартира в пригороде.
+        """
+        for key in ("townDistrictName", "townDistrict", "districtName", "district"):
             value = obj.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()

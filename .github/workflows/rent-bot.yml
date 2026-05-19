@@ -66,7 +66,7 @@ jobs:
           POSTS_PER_RUN=1
           POST_INTERVAL_SECONDS=10
 
-          POSTS_PER_DAY=12
+          POSTS_PER_DAY=15
           POST_WINDOW_START=10:00
           POST_WINDOW_END=20:00
 
