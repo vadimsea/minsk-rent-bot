@@ -198,20 +198,28 @@ class KufarParser(BaseParser):
                 if isinstance(direct, str) and direct.startswith("http"):
                     return direct
 
-            # 3) ID картинки → строим URL шаблона Kufar
-            image_id = img.get("id") or img.get("path") or img.get("media_storage")
-            if not isinstance(image_id, str):
-                continue
+            # 3) Новый storage Kufar: media_storage='rms', `path` —
+            # относительный путь вида 'adim1/<uuid>.jpg'. У таких записей
+            # поле `id` обычно равно '0000' и роли не играет.
+            path = img.get("path")
+            media_storage = (img.get("media_storage") or "").lower()
+            if isinstance(path, str) and path.strip():
+                path = path.strip().lstrip("/")
+                if media_storage == "rms" or not media_storage:
+                    return f"https://rms.kufar.by/v1/list_thumbs_2x/{path}"
+                if media_storage in {"yams", "yams_storage"}:
+                    return f"https://yams.kufar.by/api/v1/kufar-ads/images/{path}?rule=gallery"
 
-            image_id = image_id.strip()
-            if not image_id or not _HEX_HASH_RE.match(image_id):
-                # Похоже на заглушку ("0000", "none", и т.п.) — пропускаем
-                continue
-
-            return (
-                "https://yams.kufar.by/api/v1/kufar-ads/images/"
-                f"{image_id[:2]}/{image_id}.jpg?rule=gallery"
-            )
+            # 4) Старый storage (yams): в `id` лежит длинный hex-хеш —
+            # сами строим URL по шаблону.
+            image_id = img.get("id")
+            if isinstance(image_id, str):
+                image_id = image_id.strip()
+                if image_id and _HEX_HASH_RE.match(image_id):
+                    return (
+                        "https://yams.kufar.by/api/v1/kufar-ads/images/"
+                        f"{image_id[:2]}/{image_id}.jpg?rule=gallery"
+                    )
 
         return None
 
