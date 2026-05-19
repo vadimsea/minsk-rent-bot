@@ -163,30 +163,36 @@ def run_once(posts_count: int | None = None) -> int:
     return published_count
 
 
-def run_cron_tick(slot_grace_minutes: int = 30) -> int:
+def run_cron_tick(slot_grace_minutes: int = 30, max_catch_up: int = 5) -> int:
     """
     Один «тик» для запуска по cron (например, GitHub Actions каждые 5 минут).
 
     Логика «догоняем пропущенные слоты»:
     - детерминированно генерируем POSTS_PER_DAY слотов на сегодня (seed=date);
-    - берём самый ранний слот, который:
-        * уже наступил (slot_time <= now);
-        * ещё не отмечен как выполненный;
-    - публикуем ровно ОДНО объявление в счёт этого слота;
-    - если успех — отмечаем слот выполненным; если нет — оставляем,
-      попробуем на следующем тике.
+    - собираем все ещё не отработанные слоты, время которых уже наступило
+      (due-слоты), отсортированные от самого раннего;
+    - публикуем до `max_catch_up` объявлений за один тик — по одному в счёт
+      каждого due-слота, начиная с самого раннего;
+    - сколько удалось опубликовать — столько же самых ранних due-слотов
+      помечаем как отработанные. Остальные оставляем — попробуем на
+      следующем тике.
 
-    Главная идея: НИКОГДА не выбрасываем «опоздавшие» слоты.
+    Зачем «догонять» сразу несколько слотов в одном тике:
     GitHub Actions free-tier на «*/5 * * * *» сильно лагает и иногда не
-    запускает тики часами. Раньше код помечал такие слоты как «потерянные»
-    и в итоге за день выходило 0 публикаций. Теперь — как только тик
-    наконец-то приходит, мы по одному добиваем все накопившиеся слоты
-    (примерно один пост за тик, т.е. за ~5 минут реального времени).
+    запускает тики часами. Если за полдня накопилось 4 просроченных слота,
+    а cron наконец-то стрельнул — нам нужно за этот тик добить все 4, а не
+    один. Иначе следующего тика можно ждать ещё несколько часов.
+
+    Чтобы не вылететь по 10-мин таймауту GH Actions и не спамить телегу
+    залпом — ограничиваем количество catch-up публикаций за один тик
+    параметром `max_catch_up` (по умолчанию 5).
 
     Параметр slot_grace_minutes оставлен для обратной совместимости CLI,
     но больше не используется для отбраковки слотов.
     """
-    _ = slot_grace_minutes  # legacy, см. docstring
+    _ = slot_grace_minutes  # legacy
+
+    max_catch_up = max(1, int(max_catch_up))
 
     storage = Storage()
 
@@ -210,31 +216,25 @@ def run_cron_tick(slot_grace_minutes: int = 30) -> int:
         len(slots),
     )
 
-    # Ищем самый ранний due-слот (время уже наступило, не отработан).
-    # slots отсортированы по возрастанию — поэтому первая «дырка» в прошлом
-    # и есть нужный нам слот.
-    matched_slot = None
+    # Собираем все due-неотработанные слоты (отсортированы по возрастанию).
+    # slots уже отсортированы — поэтому идём по порядку.
+    due_slots: List[tuple[datetime, str]] = []
+    next_future_key: str | None = None
     for slot in slots:
         slot_dt = slot.replace(tzinfo=tz) if tz else slot
         if slot_dt > now:
-            # дальше — всё в будущем, искать нечего
+            next_future_key = slot.strftime("%H:%M")
             break
         slot_key = slot.strftime("%H:%M")
         if storage.is_slot_executed(today, slot_key):
             continue
-        matched_slot = (slot_dt, slot_key)
-        break
+        due_slots.append((slot_dt, slot_key))
 
-    if not matched_slot:
-        next_future = next(
-            (s.strftime("%H:%M") for s in slots
-             if (s.replace(tzinfo=tz) if tz else s) > now),
-            None,
-        )
-        if next_future:
+    if not due_slots:
+        if next_future_key:
             logger.info(
                 "Все наступившие слоты уже отработаны. Следующий слот: %s",
-                next_future,
+                next_future_key,
             )
         else:
             logger.info(
@@ -243,26 +243,45 @@ def run_cron_tick(slot_grace_minutes: int = 30) -> int:
             )
         return 0
 
-    slot_dt, slot_key = matched_slot
-    delta_min = int((now - slot_dt).total_seconds() // 60)
-    if delta_min <= 1:
-        logger.info("Слот %s наступил — публикуем 1 объявление", slot_key)
-    else:
-        logger.info(
-            "Догоняем слот %s (опоздание %s мин) — публикуем 1 объявление",
-            slot_key, delta_min,
-        )
+    to_publish_n = min(len(due_slots), max_catch_up)
 
-    published = run_once(posts_count=1)
-    if published > 0:
+    if to_publish_n == 1:
+        s_dt, s_key = due_slots[0]
+        delta_min = int((now - s_dt).total_seconds() // 60)
+        if delta_min <= 1:
+            logger.info("Слот %s наступил — публикуем 1 объявление", s_key)
+        else:
+            logger.info(
+                "Догоняем слот %s (опоздание %s мин) — публикуем 1 объявление",
+                s_key, delta_min,
+            )
+    else:
+        oldest_delta = int((now - due_slots[0][0]).total_seconds() // 60)
+        logger.info(
+            "Догоняем %s слот(а/ов) одним тиком (самый старый опоздал на %s мин): %s",
+            to_publish_n, oldest_delta,
+            ", ".join(s[1] for s in due_slots[:to_publish_n]),
+        )
+        if len(due_slots) > to_publish_n:
+            logger.info(
+                "Ещё %s слот(а/ов) останется на следующий тик: %s",
+                len(due_slots) - to_publish_n,
+                ", ".join(s[1] for s in due_slots[to_publish_n:]),
+            )
+
+    published = run_once(posts_count=to_publish_n)
+
+    # Помечаем первые `published` due-слот(а/ов) — самые ранние.
+    for i in range(min(published, to_publish_n)):
+        slot_key = due_slots[i][1]
         storage.mark_slot_executed(today, slot_key)
         logger.info("Слот %s отмечен как отработанный", slot_key)
-    else:
-        # Не удалось опубликовать (нечего публиковать / телеграм отказал и т.п.).
-        # Слот НЕ помечаем выполненным — попробуем на следующем тике.
+
+    if published < to_publish_n:
         logger.warning(
-            "Слот %s: ничего не опубликовано, попробуем на следующем тике",
-            slot_key,
+            "Запросили %s публикаций, реально опубликовано %s — "
+            "оставшиеся слоты попробуем на следующем тике",
+            to_publish_n, published,
         )
 
     return published
@@ -281,13 +300,20 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--cron-tick", action="store_true", dest="cron_tick",
         help="Один тик для запуска по внешнему cron / GitHub Actions: "
-             "догоняет самый ранний ещё не отработанный из POSTS_PER_DAY "
-             "случайных слотов в окне, публикуя одно объявление за тик.",
+             "догоняет самые ранние ещё не отработанные слоты из POSTS_PER_DAY "
+             "случайных слотов в окне. До --max-catch-up публикаций за тик.",
     )
     parser.add_argument(
         "--grace-minutes", type=int, default=30,
         help="Legacy-параметр, оставлен для обратной совместимости. "
              "Больше не используется: --cron-tick не выбрасывает «просроченные» слоты.",
+    )
+    parser.add_argument(
+        "--max-catch-up", type=int, default=5, dest="max_catch_up",
+        help="Сколько просроченных слотов догонять за один --cron-tick. "
+             "По умолчанию 5. Защищает от спама в телегу и от 10-мин таймаута CI, "
+             "и одновременно позволяет одному редкому тику закрыть несколько слотов сразу "
+             "(полезно при ненадёжном GitHub Actions cron).",
     )
     return parser.parse_args()
 
@@ -297,7 +323,10 @@ def main() -> int:
     args = parse_cli_args()
 
     if args.cron_tick:
-        run_cron_tick(slot_grace_minutes=args.grace_minutes)
+        run_cron_tick(
+            slot_grace_minutes=args.grace_minutes,
+            max_catch_up=args.max_catch_up,
+        )
     elif args.scheduled and not args.once:
         run_scheduled(run_once)
     else:
