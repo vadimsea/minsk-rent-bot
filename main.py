@@ -167,16 +167,27 @@ def run_cron_tick(slot_grace_minutes: int = 30) -> int:
     """
     Один «тик» для запуска по cron (например, GitHub Actions каждые 5 минут).
 
-    Логика:
+    Логика «догоняем пропущенные слоты»:
     - детерминированно генерируем POSTS_PER_DAY слотов на сегодня (seed=date);
-    - смотрим, есть ли слот, на который сейчас «попадаем»:
-        — слот должен быть в прошлом не более чем slot_grace_minutes минут назад
-          (это покрывает задержки GitHub Actions);
-        — слот не должен быть уже отмечен как выполненный сегодня;
-    - если такой слот есть — публикуем ровно одно объявление и отмечаем слот.
+    - берём самый ранний слот, который:
+        * уже наступил (slot_time <= now);
+        * ещё не отмечен как выполненный;
+    - публикуем ровно ОДНО объявление в счёт этого слота;
+    - если успех — отмечаем слот выполненным; если нет — оставляем,
+      попробуем на следующем тике.
 
-    Один тик публикует не более одного поста.
+    Главная идея: НИКОГДА не выбрасываем «опоздавшие» слоты.
+    GitHub Actions free-tier на «*/5 * * * *» сильно лагает и иногда не
+    запускает тики часами. Раньше код помечал такие слоты как «потерянные»
+    и в итоге за день выходило 0 публикаций. Теперь — как только тик
+    наконец-то приходит, мы по одному добиваем все накопившиеся слоты
+    (примерно один пост за тик, т.е. за ~5 минут реального времени).
+
+    Параметр slot_grace_minutes оставлен для обратной совместимости CLI,
+    но больше не используется для отбраковки слотов.
     """
+    _ = slot_grace_minutes  # legacy, см. docstring
+
     storage = Storage()
 
     tz = _tz()
@@ -191,49 +202,56 @@ def run_cron_tick(slot_grace_minutes: int = 30) -> int:
         logger.info("Нет слотов на сегодня (%s). Выход.", today.isoformat())
         return 0
 
-    slots_today_executed = storage.count_executed_slots_for_day(today)
+    executed_today = storage.count_executed_slots_for_day(today)
     logger.info(
-        "cron-tick: %s | сегодня уже отработано слотов: %s / %s",
+        "cron-tick: %s | отработано слотов сегодня: %s / %s",
         now.strftime("%Y-%m-%d %H:%M"),
-        slots_today_executed,
+        executed_today,
         len(slots),
     )
 
+    # Ищем самый ранний due-слот (время уже наступило, не отработан).
+    # slots отсортированы по возрастанию — поэтому первая «дырка» в прошлом
+    # и есть нужный нам слот.
     matched_slot = None
     for slot in slots:
         slot_dt = slot.replace(tzinfo=tz) if tz else slot
-        delta = (now - slot_dt).total_seconds()
-        if delta < 0:
-            # этот слот ещё в будущем — пропускаем, проверим в следующий тик
-            continue
-        if delta > slot_grace_minutes * 60:
-            # слот был слишком давно, считаем «потерянным» (запишем как сделанный,
-            # чтобы не зацикливаться)
-            slot_key = slot.strftime("%H:%M")
-            if not storage.is_slot_executed(today, slot_key):
-                logger.warning(
-                    "Слот %s пропущен (был %d мин назад). Помечаем как отработанный.",
-                    slot_key, int(delta / 60),
-                )
-                storage.mark_slot_executed(today, slot_key)
-            continue
-
+        if slot_dt > now:
+            # дальше — всё в будущем, искать нечего
+            break
         slot_key = slot.strftime("%H:%M")
         if storage.is_slot_executed(today, slot_key):
             continue
-
-        matched_slot = (slot, slot_key)
+        matched_slot = (slot_dt, slot_key)
         break
 
     if not matched_slot:
-        logger.info(
-            "Ни один слот не подходит. Слоты сегодня: %s",
-            ", ".join(s.strftime("%H:%M") for s in slots),
+        next_future = next(
+            (s.strftime("%H:%M") for s in slots
+             if (s.replace(tzinfo=tz) if tz else s) > now),
+            None,
         )
+        if next_future:
+            logger.info(
+                "Все наступившие слоты уже отработаны. Следующий слот: %s",
+                next_future,
+            )
+        else:
+            logger.info(
+                "Все слоты сегодня отработаны: %s",
+                ", ".join(s.strftime("%H:%M") for s in slots),
+            )
         return 0
 
-    slot, slot_key = matched_slot
-    logger.info("Слот %s попал — пытаемся опубликовать 1 объявление", slot_key)
+    slot_dt, slot_key = matched_slot
+    delta_min = int((now - slot_dt).total_seconds() // 60)
+    if delta_min <= 1:
+        logger.info("Слот %s наступил — публикуем 1 объявление", slot_key)
+    else:
+        logger.info(
+            "Догоняем слот %s (опоздание %s мин) — публикуем 1 объявление",
+            slot_key, delta_min,
+        )
 
     published = run_once(posts_count=1)
     if published > 0:
@@ -241,8 +259,11 @@ def run_cron_tick(slot_grace_minutes: int = 30) -> int:
         logger.info("Слот %s отмечен как отработанный", slot_key)
     else:
         # Не удалось опубликовать (нечего публиковать / телеграм отказал и т.п.).
-        # Слот НЕ помечаем выполненным — попробуем в следующий тик в рамках grace.
-        logger.warning("Слот %s: ничего не опубликовано, попробуем в следующий тик", slot_key)
+        # Слот НЕ помечаем выполненным — попробуем на следующем тике.
+        logger.warning(
+            "Слот %s: ничего не опубликовано, попробуем на следующем тике",
+            slot_key,
+        )
 
     return published
 
@@ -260,11 +281,13 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--cron-tick", action="store_true", dest="cron_tick",
         help="Один тик для запуска по внешнему cron / GitHub Actions: "
-             "сам решит, попадаем ли в один из POSTS_PER_DAY случайных слотов в окне",
+             "догоняет самый ранний ещё не отработанный из POSTS_PER_DAY "
+             "случайных слотов в окне, публикуя одно объявление за тик.",
     )
     parser.add_argument(
         "--grace-minutes", type=int, default=30,
-        help="Допуск опоздания слота для --cron-tick (мин). По умолчанию 30.",
+        help="Legacy-параметр, оставлен для обратной совместимости. "
+             "Больше не используется: --cron-tick не выбрасывает «просроченные» слоты.",
     )
     return parser.parse_args()
 
