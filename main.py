@@ -18,6 +18,7 @@ import argparse
 import logging
 import sys
 import time
+from collections import Counter, OrderedDict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -97,6 +98,44 @@ def deduplicate_in_batch(listings: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
+def pick_round_robin(items: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+    """
+    Берём первые n объявлений по схеме round-robin между источниками.
+
+    Зачем: `collect_all()` собирает источники в порядке приоритета и просто
+    конкатенирует списки. У Realt объявлений в разы больше, чем у других,
+    поэтому первые N штук в `passed` — всегда с Realt, и канал получался
+    «однопотоковый». Здесь мы по очереди берём по одному с Kufar, Hata,
+    Domovita, Realt и т.д., чтобы лента была разноисточниковой.
+
+    Внутри каждой группы порядок сохраняется (он определяется выдачей сайта,
+    как правило — по свежести), поэтому свежие листинги по-прежнему
+    идут первыми.
+    """
+    if n <= 0 or not items:
+        return []
+
+    groups: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+    for it in items:
+        src = it.get("source") or "unknown"
+        groups.setdefault(src, []).append(it)
+
+    picked: List[Dict[str, Any]] = []
+    while len(picked) < n:
+        took_any = False
+        for src in list(groups.keys()):
+            bucket = groups[src]
+            if not bucket:
+                continue
+            picked.append(bucket.pop(0))
+            took_any = True
+            if len(picked) >= n:
+                break
+        if not took_any:
+            break
+    return picked
+
+
 def run_once(posts_count: int | None = None) -> int:
     """
     Один прогон пайплайна.
@@ -136,8 +175,19 @@ def run_once(posts_count: int | None = None) -> int:
         logger.info("Новых подходящих объявлений нет. Завершаем.")
         return 0
 
-    to_publish = passed[: max(0, target_count)]
-    logger.info("К публикации: %s из %s", len(to_publish), len(passed))
+    sources_in_passed = Counter((l.get("source") or "?") for l in passed)
+    logger.info(
+        "Распределение прошедших по источникам: %s",
+        ", ".join(f"{s}={c}" for s, c in sources_in_passed.most_common()),
+    )
+
+    to_publish = pick_round_robin(passed, max(0, target_count))
+    sources_in_pick = Counter((l.get("source") or "?") for l in to_publish)
+    logger.info(
+        "К публикации: %s из %s (по источникам: %s)",
+        len(to_publish), len(passed),
+        ", ".join(f"{s}={c}" for s, c in sources_in_pick.most_common()),
+    )
 
     published_count = 0
     for idx, listing in enumerate(to_publish, start=1):
