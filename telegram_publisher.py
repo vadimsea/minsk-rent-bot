@@ -26,6 +26,7 @@ from formatter import (
     TELEGRAM_MESSAGE_LIMIT,
     format_for_telegram,
 )
+from promo import PromoPost
 
 
 logger = logging.getLogger("telegram")
@@ -89,6 +90,27 @@ class TelegramPublisher:
             return self._send_message(text_only)
 
         return self._send_message(text)
+
+    def publish_promo(self, promo: PromoPost) -> Optional[int]:
+        if self.dry_run:
+            logger.info("=" * 60)
+            logger.info("[DRY_RUN] promo %s", promo.key)
+            logger.info("Текст промо:\n%s", promo.text)
+            logger.info("Кнопки: %s", [(button.text, button.url) for button in promo.buttons])
+            logger.info("=" * 60)
+            return 0
+
+        if not self.bot_token or not self.chat_id:
+            logger.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID не заданы — публикация невозможна")
+            return None
+
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": button.text, "url": button.url}]
+                for button in promo.buttons
+            ]
+        }
+        return self._send_message_with_keyboard(promo.text, keyboard)
 
     # ---------- низкоуровневые запросы ----------
 
@@ -173,3 +195,26 @@ class TelegramPublisher:
             return True
         logger.warning("sendMessage %s: %s", response.status_code, response.text[:300])
         return False
+
+    def _send_message_with_keyboard(self, text: str, reply_markup: dict) -> Optional[int]:
+        try:
+            response = requests.post(
+                self._api("sendMessage"),
+                json={
+                    "chat_id": self.chat_id,
+                    "text": text[:TELEGRAM_MESSAGE_LIMIT],
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                    "reply_markup": reply_markup,
+                },
+                timeout=CONFIG.request_timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning("sendMessage promo сетевая ошибка: %s", exc)
+            return None
+
+        if response.status_code == 200:
+            data = response.json()
+            return int((data.get("result") or {}).get("message_id") or 0)
+        logger.warning("sendMessage promo %s: %s", response.status_code, response.text[:300])
+        return None

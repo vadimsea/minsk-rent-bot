@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS daily_slots (
     executed_at TEXT NOT NULL,
     PRIMARY KEY (day, slot)
 );
+
+CREATE TABLE IF NOT EXISTS promo_posts (
+    day TEXT NOT NULL,
+    promo_key TEXT NOT NULL,
+    message_id INTEGER,
+    posted_at TEXT NOT NULL,
+    PRIMARY KEY (day, promo_key)
+);
 """
 
 
@@ -158,3 +166,38 @@ class Storage:
             )
             row = cur.fetchone()
             return int(row[0]) if row else 0
+
+    # -------- promo_posts --------
+
+    def promo_keys_posted_for_day(self, day: date | str) -> set[str]:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "SELECT promo_key FROM promo_posts WHERE day = ?",
+                (self._day_key(day),),
+            )
+            return {str(row[0]) for row in cur.fetchall()}
+
+    def mark_promo_posted(
+        self,
+        day: date | str,
+        promo_key: str,
+        message_id: int | None = None,
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO promo_posts
+                    (day, promo_key, message_id, posted_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        self._day_key(day),
+                        promo_key,
+                        message_id,
+                        datetime.utcnow().isoformat(timespec="seconds"),
+                    ),
+                )
+                conn.commit()
+            except sqlite3.Error as exc:
+                logger.error("Ошибка записи промо в БД: %s", exc)

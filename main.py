@@ -27,6 +27,7 @@ from filters import filter_listings
 from formatter import explain_pass_reason
 from normalizer import normalize_listing
 from parsers import get_parser
+from promo import due_promo_posts, next_promo_hint
 from scheduler import _parse_hhmm, _tz, generate_daily_slots, run_scheduled
 from sources import Source, get_enabled_sources
 from storage import Storage
@@ -213,6 +214,48 @@ def run_once(posts_count: int | None = None) -> int:
     return published_count
 
 
+def run_promo(*, force: bool = False) -> int:
+    storage = Storage()
+    publisher = TelegramPublisher()
+
+    tz = _tz()
+    now = datetime.now(tz=tz) if tz else datetime.now()
+    posted_keys = storage.promo_keys_posted_for_day(now.date())
+    posts = due_promo_posts(
+        current=now,
+        posted_keys=posted_keys,
+        force=force,
+    )
+    posts = posts[:1]
+
+    if not posts:
+        hint = next_promo_hint(current=now, posted_keys=posted_keys)
+        logger.info(
+            "Промо к публикации нет. Сейчас %s.%s",
+            now.strftime("%Y-%m-%d %H:%M"),
+            f" Следующее окно: {hint}" if hint else "",
+        )
+        return 0
+
+    published = 0
+    for promo in posts:
+        message_id = publisher.publish_promo(promo)
+        if message_id is None:
+            logger.warning("Не удалось опубликовать промо %s", promo.key)
+            continue
+        published += 1
+        if not CONFIG.dry_run:
+            storage.mark_promo_posted(now.date(), promo.key, message_id)
+        logger.info("Промо %s опубликовано", promo.key)
+
+    return published
+
+
+def run_once_with_promo(posts_count: int | None = None) -> int:
+    run_promo()
+    return run_once(posts_count=posts_count)
+
+
 def run_cron_tick(slot_grace_minutes: int = 30, max_catch_up: int = 5) -> int:
     """
     Один «тик» для запуска по cron (например, GitHub Actions каждые 5 минут).
@@ -243,6 +286,7 @@ def run_cron_tick(slot_grace_minutes: int = 30, max_catch_up: int = 5) -> int:
     _ = slot_grace_minutes  # legacy
 
     max_catch_up = max(1, int(max_catch_up))
+    run_promo()
 
     storage = Storage()
 
@@ -365,6 +409,14 @@ def parse_cli_args() -> argparse.Namespace:
              "и одновременно позволяет одному редкому тику закрыть несколько слотов сразу "
              "(полезно при ненадёжном GitHub Actions cron).",
     )
+    parser.add_argument(
+        "--promo", action="store_true",
+        help="Проверить и опубликовать рекламные посты по расписанию без публикации объявлений",
+    )
+    parser.add_argument(
+        "--force-promo", action="store_true",
+        help="Опубликовать рекламные посты без проверки времени и отметок в БД",
+    )
     return parser.parse_args()
 
 
@@ -372,14 +424,17 @@ def main() -> int:
     setup_logging()
     args = parse_cli_args()
 
-    if args.cron_tick:
+    if args.promo:
+        run_promo(force=args.force_promo)
+    elif args.cron_tick:
         run_cron_tick(
             slot_grace_minutes=args.grace_minutes,
             max_catch_up=args.max_catch_up,
         )
     elif args.scheduled and not args.once:
-        run_scheduled(run_once)
+        run_scheduled(run_once_with_promo)
     else:
+        run_promo(force=args.force_promo)
         run_once()
     return 0
 
